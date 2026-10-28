@@ -226,6 +226,87 @@ class ContentConfig(BaseModel):
     audit_llm_enabled: bool = True  # 审计是否启用 LLM 复核（规则扫描始终执行）
 
 
+class EditingConfig(BaseModel):
+    """Agent 智能视频剪辑（edit_* 技能 + editing 流水线）的可配置参数。
+
+    设计文档：docs/agent-video-editing.md。云优先原则：创意层 LLM 走云
+    （Anthropic 兼容 /v1/messages），无 key 显式报错不降级；渲染层走本机
+    ffmpeg。mock=True 时 LLM/渲染走内置桩（demo 与无 key 环境冒烟用）。
+    """
+
+    # ── 创意层 LLM（与 content 域同源：LongCat Anthropic 兼容协议）──
+    llm_api_base: str = "https://api.longcat.chat/anthropic"
+    llm_api_key_env: str = "AI_LLM_API_KEY"
+    llm_model: str = "LongCat-2.0"
+    llm_timeout_s: float = 90.0
+    # 思考型模型（如 MiniMax M 系）会先出 thinking 块；8192 曾被吃光导致
+    # content 为空，放宽到 16384
+    llm_max_tokens: int = 16384
+
+    # ── 流水线治理 ──
+    # 默认审批阶段：分镜是审批主战场（用户决策：全自动为主，可逐阶段开审批）
+    default_review_stages: list[str] = Field(
+        default_factory=lambda: ["storyboard"])
+    # 支持审批的全部阶段名（edit_review 只接受此集合内的 stage）
+    reviewable_stages: list[str] = Field(
+        default_factory=lambda: ["copy", "script", "storyboard", "pre_render"])
+    max_duration_s: float = 300.0          # 成片时长上限（LLM 时长预算约束）
+    default_aspect_ratio: str = "16:9"
+    allowed_aspect_ratios: list[str] = Field(
+        default_factory=lambda: ["16:9", "9:16", "1:1"])
+    max_assets: int = 20                   # 单项目素材数上限
+    allowed_asset_exts: list[str] = Field(
+        default_factory=lambda: [
+            ".mp4", ".mov", ".mkv", ".webm",
+            ".jpg", ".jpeg", ".png", ".webp",
+            ".mp3", ".wav", ".m4a", ".aac",
+        ])
+
+    # ── 素材理解 ──
+    scene_threshold: float = 0.3           # ffmpeg scdet 场景切分阈值
+    max_shots_per_video: int = 12          # 镜头数上限（防 LLM 载荷爆炸）
+    understand_frame_samples: int = 8      # 抽帧数（v1.1 vision 看图+读字幕）
+    vision_enabled: bool = True            # v1.1 视觉理解开关（关=盲剪，仅兜底）
+    vision_max_frames: int = 12            # 单素材 vision 帧上限
+    vision_frame_width: int = 480          # 抽帧宽度（省 token）
+
+    # ── 成片自检 ──
+    preview_frames: int = 6                # 渲染后均匀抽帧数（产物 preview/）
+
+    # ── 剪辑渲染（ffmpeg）──
+    subtitle_font: str = "Noto Sans CJK SC"  # Windows 部署改 Microsoft YaHei
+    subtitle_font_size: int = 22
+    transition: str = "fade"               # fade | none（xfade 仅此两档 v1）
+    transition_duration_s: float = 0.5
+    video_bitrate: str = "6M"
+    x264_preset: str = "medium"
+
+    # ── 口播（TTS，复用 _cloud_tts 预设音色）──
+    tts_key_env: str = "AI_SPEECH_API_KEY"
+    tts_voice: str = "longanhuan_v3.6"
+    tts_model: str = "qwen-audio-3.0-tts-flash"
+
+    # ── 存储 ──
+    # True=PG 不可达时回落 data_dir/editing/*.json 文件存储（开发/demo）；
+    # False=PG 不可达显式报错（生产）。回落行为记入 project 记录 storage 字段。
+    allow_file_store_fallback: bool = True
+
+    # ── 冒烟开关 ──
+    # env FLOWMIND_EDIT_MOCK（"1"/"true"）覆盖：LLM 桩 + ffmpeg lavfi 桩渲染。
+    mock: bool = Field(default=False, validate_default=True)
+
+    @field_validator("mock", mode="before")
+    @classmethod
+    def _env_mock(cls, v: bool) -> bool:
+        """env FLOWMIND_EDIT_MOCK 覆盖（1/true 开，0/false 关）。"""
+        raw = os.environ.get("FLOWMIND_EDIT_MOCK", "").strip().lower()
+        if raw in ("1", "true", "yes"):
+            return True
+        if raw in ("0", "false", "no"):
+            return False
+        return v
+
+
 class OrchestratorConfig(BaseModel):
     """A2A 编排器配置。"""
     llm_key_env: str = "AI_LLM_API_KEY"
@@ -770,6 +851,7 @@ class FlowmindConfig(BaseModel):
     feishu_kb: FeishuKbConfig = Field(default_factory=FeishuKbConfig)
     marketing_image: MarketingImageConfig = Field(default_factory=MarketingImageConfig)
     localizer: LocalizerConfig = Field(default_factory=LocalizerConfig)
+    editing: EditingConfig = Field(default_factory=EditingConfig)
     content: ContentConfig = Field(default_factory=ContentConfig)
     orchestrator: OrchestratorConfig = Field(default_factory=OrchestratorConfig)
     keyword_trend: KeywordTrendConfig = Field(default_factory=KeywordTrendConfig)

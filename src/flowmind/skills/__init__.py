@@ -37,6 +37,13 @@ FAMILIES: dict[str, tuple[str, ...]] = {
         "localize_submit",
         "localize_video",
     ),
+    "edit": (
+        "edit_assets",
+        "edit_pipeline",
+        "edit_project",
+        "edit_review",
+        "edit_status",
+    ),
     "dsp": (
         "dsp_bgm_match",
         "dsp_cart_sticker",

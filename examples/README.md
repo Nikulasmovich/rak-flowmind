@@ -7,7 +7,7 @@ GPU / PG / MQTT / Milvus / API key）：
 PYTHONPATH=$PWD/src conda run -n flowmind python examples/<name>_demo.py
 ```
 
-## 18 个 demo 一览
+## 19 个 demo 一览
 
 | 脚本 | 演示能力 | 你将看到 |
 |---|---|---|
@@ -21,6 +21,7 @@ PYTHONPATH=$PWD/src conda run -n flowmind python examples/<name>_demo.py
 | [`api_server_demo.py`](./api_server_demo.py) | 单端口 REST 任务通道冒烟 | health/manifest 发现、POST 202 → 轮询 → 流式下载、422/429 错误语义 |
 | [`auth_token_demo.py`](./auth_token_demo.py) | 调用方凭证校验（RakAuthMiddleware） | Bearer 验签、豁免前缀匿名可达、tenant_scope 三态 fail-closed、`X-Rak-Tenant` 被忽略 |
 | [`federation_register_demo.py`](./federation_register_demo.py) | 联邦自注册（PG+MQTT 双通道） | register QoS1 payload 契约、单通道降级仍完成注册、双通道全挂静默降级、心跳与优雅注销 |
+| [`edit_pipeline_demo.py`](./edit_pipeline_demo.py) | Agent 智能剪辑（edit_*） | 全自动成片（理解→文案→脚本→分镜→ffmpeg 渲染）、分镜审批闸 revise→approve、URL 拒绝/坏素材 failed |
 | [`dsp_timeline_build_demo.py`](./dsp_timeline_build_demo.py) | dsp 素材对齐 · **切镜收口** · 时间线锁定 | 实测逐句归属到镜头、比例兜底如实告警「归属为推断」、无口播镜吃停顿/尾部静默、收口并镜/拆镜、转场符号落 EDL、非法镜头时长 → VALIDATION |
 | [`dsp_tts_generate_demo.py`](./dsp_tts_generate_demo.py) | dsp 口播配音（豆包 · **DAG 起点**） | 无上游依赖也跑通、`text_prompt` 纯文案、出音轨 + **逐句实测时间戳**、预计超 120s / 无 shots → 明确报错 |
 | [`dsp_image_to_video_demo.py`](./dsp_image_to_video_demo.py) | dsp 图生视频（逐镜视频底 · §7.5 第 1 步） | 直链**转存**为不可变 key、未配密钥/缺锁定时间线/单镜出片失败各自如实降级、`maxShots` 成本闸 |
@@ -100,7 +101,7 @@ for f in examples/*_demo.py; do
 done
 ```
 
-18 个 demo 全 PASS 是改动合并前的回归底线（本仓库无单测，demo 即冒烟测试）。
+19 个 demo 全 PASS 是改动合并前的回归底线（本仓库无单测，demo 即冒烟测试）。
 （`api_server_demo` / `auth_token_demo` 需 `uvicorn` / `starlette`；`localize_video_demo`
 需 GPU 侧依赖——在未装齐的裸 Python 环境里它们会各自报缺依赖，与技能层改动无关。）
 
