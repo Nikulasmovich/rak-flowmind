@@ -13,8 +13,11 @@ project_id——从 ProjectStore 载入项目继续执行（首次跑或审批�
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
+from flowmind.config import load_config
 from flowmind.contracts import Evidence, ReasoningChain, SkillOutput
 from flowmind.editing.pipeline import (
     EditingStageError,
@@ -29,8 +32,11 @@ _VERSION = "0.1.0"
 
 
 class PipelineInput(BaseModel):
-    """流水线执行入参。"""
+    """Internal pipeline task input, including approval continuation data."""
     project_id: str = Field(min_length=8, description="剪辑项目 id")
+    review_action: Literal["approve", "revise", "reject"] | None = None
+    review_stage: Literal["copy", "script", "storyboard", "pre_render"] | None = None
+    feedback: str | None = None
 
 
 class PipelineReport(BaseModel):
@@ -47,7 +53,22 @@ def edit_pipeline(inp: PipelineInput) -> SkillOutput[PipelineReport]:
     """驱动剪辑项目执行/续跑：阶段推进、审批闸、产物落盘。"""
     pid = inp.project_id
     try:
-        project = run_pipeline(pid)
+        backend = load_config().editing.backend
+        if backend == "cybercut":
+            from flowmind.editing.cybercut_backend import (
+                apply_review,
+            )
+            from flowmind.editing.cybercut_backend import (
+                run_pipeline as run_cybercut,
+            )
+            if inp.review_action:
+                apply_review(pid, inp.review_stage or "", inp.review_action,
+                             inp.feedback)
+            project = run_cybercut(pid)
+        elif backend == "flowmind":
+            project = run_pipeline(pid)
+        else:
+            raise ProjectStoreError(f"未知 editing.backend：{backend!r}")
     except CancelledError as exc:
         return SkillOutput(
             data=PipelineReport(project_id=pid, state="cancelled", stage=str(exc)),
@@ -91,7 +112,7 @@ def edit_pipeline(inp: PipelineInput) -> SkillOutput[PipelineReport]:
         data=PipelineReport(
             project_id=pid, state=project.state, stage=project.stage,
             message=state_message,
-            artifact_dir=str(project_dir(pid))),
+            artifact_dir=getattr(project, "artifact_dir", str(project_dir(pid)))),
         reasoning=[ReasoningChain(
             conclusion=state_message,
             triggered_rules=[], evidence=[Evidence(

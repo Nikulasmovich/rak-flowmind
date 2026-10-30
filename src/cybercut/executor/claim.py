@@ -14,14 +14,16 @@ from typing import Any
 from cybercut.storage import node_attempts
 
 
-def claim_next_attempt(db: Any, worker_id: str) -> dict | None:
+def claim_next_attempt(
+    db: Any, worker_id: str, *, run_id: str | None = None
+) -> dict | None:
     """在**独立事务**中领取一条 attempt；无任务返回 None。
 
     事务边界（关键）：claim 必须在 handler 执行**之前**提交，
     这样长时间运行的 handler 不会持锁阻塞其它 worker 领取其它任务。
     """
     with db.transaction() as conn:
-        row = node_attempts.claim_next(conn, worker_id)
+        row = node_attempts.claim_next(conn, worker_id, run_id=run_id)
     return row
 
 

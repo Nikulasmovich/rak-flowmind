@@ -37,6 +37,7 @@ class Worker:
         heartbeat_probe: Any = None,
         hash_hook: Any = None,
         heartbeat_stop_timeout: float | None = None,
+        run_id: str | None = None,
     ) -> None:
         self._db = db
         self._registry = registry
@@ -44,12 +45,14 @@ class Worker:
         self._data_root = data_root
         self.lease_seconds = int(lease_seconds)
         self._orchestrator = orchestrator
+        self.run_id = run_id
         #: 进程级致命错误标记（如心跳无法停止）：置位后拒绝继续领取任务
         self.poisoned: HeartbeatStuckError | None = None
         self.runner = AttemptRunner(
             db, registry, data_root=data_root, lease_seconds=lease_seconds,
             heartbeat_interval=heartbeat_interval, heartbeat_probe=heartbeat_probe,
             hash_hook=hash_hook, heartbeat_stop_timeout=heartbeat_stop_timeout,
+            run_id=run_id,
         )
         self.leases = LeaseManager(db, self.worker_id, lease_seconds)
 

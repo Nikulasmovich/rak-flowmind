@@ -251,10 +251,12 @@ class AttemptRunner:
         heartbeat_probe: Any = None,
         hash_hook: Any = None,
         heartbeat_stop_timeout: float | None = None,
+        run_id: str | None = None,
     ) -> None:
         self._db = db
         self._registry = registry
         self._data_root = data_root
+        self._run_id = run_id
         self.lease_seconds = int(lease_seconds)
         self.heartbeat_interval = compute_interval(self.lease_seconds, heartbeat_interval)
         #: 单次 `stop()`/join 的等待上限（超时后中断 I/O 再试；仍失败则致命）
@@ -273,7 +275,7 @@ class AttemptRunner:
     # ── 对外入口 ──
 
     def run_once(self, worker_id: str) -> AttemptOutcome | None:
-        claimed = claim_next_attempt(self._db, worker_id)
+        claimed = claim_next_attempt(self._db, worker_id, run_id=self._run_id)
         if claimed is None:
             return None
         return self.execute(claimed, worker_id)

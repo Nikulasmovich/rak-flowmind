@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field
 
 from flowmind import auth
+from flowmind.config import load_config
 from flowmind.contracts import Evidence, ReasoningChain, SkillOutput
 from flowmind.editing.models import PSTATE_AWAITING_REVIEW
 from flowmind.editing.pipeline import project_dir
@@ -43,6 +44,7 @@ class ProjectStatus(BaseModel):
     artifacts: list[str] = Field(default_factory=list)
     outputs: dict[str, str] = Field(default_factory=dict)
     preview: list[str] = Field(default_factory=list)   # v1.1 成片自检帧
+    watermark_removed: bool = False
 
 
 class StatusReport(BaseModel):
@@ -94,14 +96,39 @@ def edit_status(inp: StatusInput) -> SkillOutput[StatusReport]:
             results.append(ProjectStatus(project_id=pid, found=False,
                                          state="not_found", stage="not_found"))
             continue
+        cybercut_state = None
+        if load_config().editing.backend == "cybercut":
+            from flowmind.editing.cybercut_backend import live_status
+            cybercut_state = live_status(pid)
+        current_state, current_stage = project.state, project.stage
+        current_stages, current_error = project.stages, project.error
+        if cybercut_state:
+            from flowmind.editing.cybercut_backend import review_stage_map, stage_map
+            run = cybercut_state["run"]
+            statuses = cybercut_state["statuses"]
+            waiting_node = next((key for key, value in statuses.items()
+                                 if value == "waiting_approval"), None)
+            terminal_map = {"succeeded": "succeeded", "failed": "failed",
+                            "cancelled": "cancelled"}
+            if run["status"] == "cancelled" and project.state == "failed":
+                terminal_map["cancelled"] = "failed"
+            current_state = (PSTATE_AWAITING_REVIEW if waiting_node else
+                             terminal_map.get(run["status"], "running"))
+            current_stage = (review_stage_map().get(waiting_node, waiting_node)
+                             if waiting_node else "render")
+            current_stages = {
+                stage: ("done" if statuses.get(node) == "succeeded" else "pending")
+                for stage, node in stage_map().items()
+            }
+            current_error = run.get("failure_message") or run.get("failure_code")
         pdir = project_dir(pid)
         review = None
-        if project.state == PSTATE_AWAITING_REVIEW:
+        if current_state == PSTATE_AWAITING_REVIEW:
             review = {
-                "gate": project.stage,
+                "gate": current_stage,
                 "feedback_history": project.review_feedback.get(
-                    project.stage, []),
-                "hint": (f"经 edit_review 对闸门 {project.stage} 执行 "
+                    current_stage, []),
+                "hint": (f"经 edit_review 对闸门 {current_stage} 执行 "
                          "approve / revise（带 feedback）/ reject"),
                 "summary": next(iter(filter(None, (
                     _summarize_artifact(pdir, "storyboard.json"),
@@ -112,15 +139,27 @@ def edit_status(inp: StatusInput) -> SkillOutput[StatusReport]:
         artifacts = [n for n in _ARTIFACT_NAMES if (pdir / n).exists()]
         outputs = {
             n: str(pdir / n) for n in _OUTPUT_NAMES if (pdir / n).exists()}
+        if cybercut_state:
+            cybercut_artifacts = cybercut_state.get("artifacts", {})
+            artifacts = sorted(cybercut_artifacts)
+            outputs = {
+                name: cybercut_artifacts[kind]
+                for name, kind in (("output.mp4", "render.mp4"),
+                                   ("cover.jpg", "render.cover.jpg"))
+                if kind in cybercut_artifacts
+            }
         preview_dir = pdir / "preview"
         preview = ([str(p) for p in sorted(preview_dir.glob("preview_*.jpg"))]
                    if preview_dir.exists() else [])
         results.append(ProjectStatus(
-            project_id=pid, state=project.state, stage=project.stage,
-            stages=project.stages, task_ids=project.task_ids,
-            error=project.error, storage=project.storage,
+            project_id=pid, state=current_state, stage=current_stage,
+            stages=current_stages, task_ids=project.task_ids,
+            error=current_error, storage=project.storage,
             review=review, artifacts=artifacts, outputs=outputs,
-            preview=preview))
+            preview=preview,
+            watermark_removed=bool(
+                (project.input.get("cybercut") or {}).get("watermark_removed")
+            )))
 
     found = [r for r in results if r.found]
     awaiting = [r for r in found if r.state == PSTATE_AWAITING_REVIEW]

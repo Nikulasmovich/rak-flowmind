@@ -37,10 +37,15 @@ ERROR_WORKER_LOST = "WORKER_LOST"
 _CLAIM_SQL = """
 WITH picked AS (
     SELECT attempt_id
-      FROM cybercut.node_attempts
-     WHERE status = 'queued'
-       AND available_at <= now()
-     ORDER BY available_at, created_at
+      FROM cybercut.node_attempts AS candidate
+     WHERE candidate.status = 'queued'
+       AND candidate.available_at <= now()
+       AND (CAST(%s AS text) IS NULL OR EXISTS (
+           SELECT 1 FROM cybercut.node_runs nr
+            WHERE nr.node_run_id = candidate.node_run_id
+              AND nr.run_id = %s
+       ))
+     ORDER BY candidate.available_at, candidate.created_at
      LIMIT 1
      FOR UPDATE SKIP LOCKED
 )
@@ -139,13 +144,13 @@ def count_active(conn: Any, node_run_id: str, tenant_id: str) -> int:
         return int(cur.fetchone()["n"])
 
 
-def claim_next(conn: Any, worker_id: str) -> dict | None:
+def claim_next(conn: Any, worker_id: str, run_id: str | None = None) -> dict | None:
     """领取一条可执行 attempt；无可用任务返回 None。
 
     **必须在事务中调用**（调用方负责 commit）——提交前不得执行 handler。
     """
     with conn.cursor() as cur:
-        cur.execute(_CLAIM_SQL, (worker_id,))
+        cur.execute(_CLAIM_SQL, (run_id, run_id, worker_id))
         row = cur.fetchone()
         return dict(row) if row else None
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
+from typing import Literal
 
 import tomli_w
 from dotenv import load_dotenv
@@ -244,6 +245,8 @@ class EditingConfig(BaseModel):
     llm_max_tokens: int = 16384
 
     # ── 流水线治理 ──
+    # CyberCut 是 edit_* 的 DAG 执行后端；旧版 FlowMind 流水线可显式切回。
+    backend: Literal["cybercut", "flowmind"] = "cybercut"
     # 默认审批阶段：分镜是审批主战场（用户决策：全自动为主，可逐阶段开审批）
     default_review_stages: list[str] = Field(
         default_factory=lambda: ["storyboard"])
