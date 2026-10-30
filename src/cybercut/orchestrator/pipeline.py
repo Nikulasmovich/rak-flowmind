@@ -26,6 +26,8 @@ class PipelineSpec:
     name: str
     version: str
     nodes: tuple[NodeSpec, ...] = field(default_factory=tuple)
+    #: True 表示该管线必须携带至少一个素材（WB-02R §二.2）
+    requires_assets: bool = False
 
     def get(self, node_key: str) -> NodeSpec:
         for spec in self.nodes:
@@ -84,5 +86,146 @@ TEST_PIPELINE = PipelineSpec(
     ),
 )
 
+#: WB-02 素材分析工作流（asset-analysis-v1）
+#:
+#: .. code-block:: text
+#:
+#:     asset_probe -> asset_normalize -> scene_detect ─┐
+#:                        └──────────> speech_transcribe ┴-> asset_analysis
+#:
+#: 说明：`asset_analysis` 额外依赖 `asset_probe`（报告需要确定性媒体事实），
+#: 是任务书 DAG 的**超集**（不缺少任何要求的边），见 ADR-0003。
+ASSET_ANALYSIS_PIPELINE = PipelineSpec(
+    name="asset-analysis-v1",
+    version="asset-analysis-v1",
+    requires_assets=True,
+    nodes=(
+        NodeSpec("asset_probe"),
+        NodeSpec("asset_normalize", depends_on=("asset_probe",)),
+        NodeSpec("scene_detect", depends_on=("asset_normalize",)),
+        NodeSpec("speech_transcribe", depends_on=("asset_normalize",)),
+        NodeSpec("asset_analysis",
+                 depends_on=("asset_probe", "scene_detect", "speech_transcribe")),
+    ),
+)
 
-__all__ = ["NodeSpec", "PipelineSpec", "TEST_PIPELINE"]
+
+def _creative_nodes(*, hybrid_gates: tuple[str, ...] = ()) -> tuple[NodeSpec, ...]:
+    """创作管线节点：媒体分析五节点 + 创作四节点（WB-03 §三）。
+
+    依赖说明：创作节点除需要**上游创作产物**外，还需要**素材分析产物**
+    （`asset.analysis.{asset_id}`，用于事实约束与候选素材），
+    故每个创作节点都显式依赖 `asset_analysis`。
+    """
+    return (
+        NodeSpec("asset_probe"),
+        NodeSpec("asset_normalize", depends_on=("asset_probe",)),
+        NodeSpec("scene_detect", depends_on=("asset_normalize",)),
+        NodeSpec("speech_transcribe", depends_on=("asset_normalize",)),
+        NodeSpec("asset_analysis",
+                 depends_on=("asset_probe", "scene_detect", "speech_transcribe")),
+        NodeSpec("creative.brief", depends_on=("asset_analysis",),
+                 approval_required="creative.brief" in hybrid_gates),
+        NodeSpec("creative.script",
+                 depends_on=("creative.brief", "asset_analysis"),
+                 approval_required="creative.script" in hybrid_gates),
+        NodeSpec("creative.storyboard",
+                 depends_on=("creative.script", "creative.brief", "asset_analysis"),
+                 approval_required="creative.storyboard" in hybrid_gates),
+        NodeSpec("creative.match",
+                 depends_on=("creative.storyboard", "asset_analysis"),
+                 approval_required="creative.match" in hybrid_gates),
+        # ── WB-04：编辑规划与模板绑定 ──
+        NodeSpec("edit.plan",
+                 depends_on=("creative.match", "creative.storyboard",
+                             "creative.script", "creative.brief",
+                             "asset_analysis"),
+                 approval_required="edit.plan" in hybrid_gates),
+        NodeSpec("template.bind",
+                 depends_on=("edit.plan", "creative.script"),
+                 approval_required="template.bind" in hybrid_gates),
+    )
+
+def _full_nodes(*, hybrid_gates: tuple[str, ...] = ()) -> tuple["NodeSpec", ...]:
+    """完整管线（WB-02–WB-05）：规划 11 节点 + 渲染 3 节点。"""
+    return _creative_nodes(hybrid_gates=hybrid_gates) + (
+        NodeSpec("render.narration",
+                 depends_on=("template.bind",),
+                 approval_required="render.narration" in hybrid_gates),
+        NodeSpec("render.composite",
+                 depends_on=("render.narration", "template.bind"),
+                 approval_required="render.composite" in hybrid_gates),
+        NodeSpec("render.qc",
+                 depends_on=("render.composite",),
+                 approval_required="render.qc" in hybrid_gates),
+    )
+
+
+def build_creative_pipeline(policy) -> "PipelineSpec":
+    """按审批策略构造创作管线（`NodeSpec.approval_required` ⇔ 策略门一致）。"""
+    gates = tuple(policy.gates)
+    name_suffix = "auto" if not gates else "-".join(
+        g.replace(".", "") for g in gates)
+    return PipelineSpec(
+        name=f"creative-v1-{name_suffix}",
+        version=f"creative-v1-{name_suffix}",
+        requires_assets=True,
+        nodes=_creative_nodes(hybrid_gates=gates),
+    )
+
+
+#: WB-03 创作管线（**全自动**审批策略）：
+#:
+#: .. code-block:: text
+#:
+#:     asset_probe -> asset_normalize -> scene_detect ─┐
+#:                        └────────> speech_transcribe ┴-> asset_analysis
+#:     asset_analysis -> creative.brief -> creative.script
+#:                    -> creative.storyboard -> creative.match
+CREATIVE_PIPELINE = PipelineSpec(
+    name="creative-v1",
+    version="creative-v1",
+    requires_assets=True,
+    nodes=_creative_nodes(),
+)
+
+#: WB-03 创作管线（**混合**审批策略：`creative.script` 处挂人工审批门）
+CREATIVE_PIPELINE_HYBRID = PipelineSpec(
+    name="creative-v1-hybrid",
+    version="creative-v1-hybrid",
+    requires_assets=True,
+    nodes=_creative_nodes(hybrid_gates=("creative.script",)),
+)
+
+#: WB-03 创作管线（**全人工**审批策略：四个创作节点全部挂审批门，WB-03R §6）
+CREATIVE_PIPELINE_MANUAL = PipelineSpec(
+    name="creative-v1-manual",
+    version="creative-v1-manual",
+    requires_assets=True,
+    nodes=_creative_nodes(hybrid_gates=(
+        "creative.brief", "creative.script", "creative.storyboard",
+        "creative.match", "edit.plan", "template.bind",
+    )),
+)
+
+
+#: WB-05 完整管线（规划 11 节点 + 渲染 3 节点）
+RENDER_PIPELINE = PipelineSpec(
+    name="render-v1",
+    version="render-v1",
+    requires_assets=True,
+    nodes=_full_nodes(),
+)
+
+
+__all__ = [
+    "ASSET_ANALYSIS_PIPELINE",
+    "CREATIVE_PIPELINE",
+    "CREATIVE_PIPELINE_HYBRID",
+    "CREATIVE_PIPELINE_MANUAL",
+    "TEST_PIPELINE",
+    "NodeSpec",
+    "PipelineSpec",
+    "build_creative_pipeline",
+    "RENDER_PIPELINE",
+]

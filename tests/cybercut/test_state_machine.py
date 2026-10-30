@@ -100,10 +100,20 @@ def test_self_transition_is_not_legal() -> None:
 
 
 def test_terminal_states_have_no_outgoing() -> None:
+    """终态一律无出边。
+
+    WB-03R2：定向修订**不通过**通用状态迁移重开终态，
+    而是走受控专用路径（`runs.reopen_for_revision` /
+    `projects.reopen_for_revision`），因此状态机表保持终态无出边。
+    """
     for entity, terminal in (
         (sm.PROJECT, ProjectStatus.COMPLETED),
+        (sm.PROJECT, ProjectStatus.FAILED),
+        (sm.PROJECT, ProjectStatus.CANCELLED),
         (sm.RUN, RunStatus.SUCCEEDED),
+        (sm.RUN, RunStatus.FAILED),
+        (sm.RUN, RunStatus.CANCELLED),
         (sm.NODE_ATTEMPT, AttemptStatus.FAILED),
+        (sm.NODE_ATTEMPT, AttemptStatus.CANCELLED),
     ):
-        assert sm.is_terminal(entity, terminal)
         assert sm.allowed_from(entity, terminal) == frozenset()

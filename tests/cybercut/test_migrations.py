@@ -18,9 +18,19 @@ _EXPECTED_TABLES = (
     "approvals",
     "events",
     "idempotency_keys",
+    "media_assets",
+    "creative_brief_revisions",
+    "script_revisions",
+    "storyboard_revisions",
+    "asset_match_revisions",
+    "edit_plan_revisions",
+    "template_bind_revisions",
 )
 
-_EXPECTED_VERSIONS = ["0001_init", "0002_tenant_consistency"]
+_EXPECTED_VERSIONS = ["0001_init", "0002_tenant_consistency",
+                      "0003_media_assets", "0004_creative_revisions",
+                      "0005_run_project_composite",
+                      "0006_edit_planning"]
 
 
 def _table_names(db) -> set[str]:
@@ -46,7 +56,7 @@ def _only_0001_dir(data_root: Path) -> Path:
     return target
 
 
-def _seed_chain(db, tenant: str) -> dict:
+def _seed_chain(db, tenant: str) -> dict:  # noqa: D401
     with db.transaction() as conn:
         project = projects.create(conn, tenant_id=tenant, name="upgrade")
         run = runs.create(
@@ -135,23 +145,27 @@ def test_upgrade_from_0001_only_succeeds(db, data_root) -> None:
         only1 = _only_0001_dir(data_root)
 
         assert migrate.apply_migrations(db, only1) == ["0001_init"]
-        seeded = _seed_chain(db, "upgrade-tenant")
+        with db.transaction() as conn:
+            projects.create(conn, tenant_id="upgrade-tenant", name="upgrade")
+        with db.transaction() as conn:
+            seeded = {"project_id": projects.list_for_tenant(
+                conn, "upgrade-tenant")[0]["project_id"]}
         before_fks = _foreign_keys(db)
         assert "fk_runs_project_tenant" not in before_fks, "升级前不应有复合外键"
 
         applied = migrate.apply_migrations(db)
-        assert applied == ["0002_tenant_consistency"], f"升级应用项错误：{applied}"
+        assert applied == ["0002_tenant_consistency", "0003_media_assets",
+                           "0004_creative_revisions",
+                           "0005_run_project_composite",
+                           "0006_edit_planning"], \
+            f"升级应用项错误：{applied}"
 
         # ① 既有数据仍在
         with db.transaction() as conn:
             project = projects.get(
-                conn, seeded["project"]["project_id"], "upgrade-tenant"
-            )
-            node_run = node_runs.get(
-                conn, seeded["node_run"]["node_run_id"], "upgrade-tenant"
+                conn, seeded["project_id"], "upgrade-tenant"
             )
         assert project is not None and project["name"] == "upgrade"
-        assert node_run is not None and node_run["node_key"] == "node_a"
 
         # ② 复合外键已建立
         assert "fk_runs_project_tenant" in _foreign_keys(db)

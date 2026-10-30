@@ -26,7 +26,7 @@ def create(
     status: NodeRunStatus | str = NodeRunStatus.BLOCKED,
     depends_on: list[str] | None = None,
     approval_required: bool = False,
-    input_revision_refs: dict | None = None,
+    input_revision_refs: list | None = None,
     node_run_id: str | None = None,
 ) -> dict:
     nid = node_run_id or new_id()
@@ -37,7 +37,7 @@ def create(
             " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
             f" RETURNING {_COLS}",
             (nid, run_id, tenant_id, node_key, str(status),
-             Json(list(depends_on or [])), Json(input_revision_refs or {}),
+             Json(list(depends_on or [])), Json(list(input_revision_refs or [])),
              bool(approval_required)),
         )
         return dict(cur.fetchone())
@@ -85,6 +85,25 @@ def list_for_run(conn: Any, run_id: str, tenant_id: str) -> list[dict]:
             (run_id, tenant_id),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def set_input_revision_refs(
+    conn: Any, node_run_id: str, tenant_id: str, refs: list[dict]
+) -> None:
+    """冻结上游 ArtifactRevision 引用（**只在首次入队时写入**，重试不漂移）。
+
+    WB-02R2 §六：写入前逐项通过 `ArtifactRevisionRef.model_validate` 校验。
+    """
+    from cybercut.contracts.run_input import ArtifactRevisionRef
+
+    validated = [ArtifactRevisionRef.model_validate(r).model_dump(mode="json")
+                 for r in (refs or [])]
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE cybercut.node_runs SET input_revision_refs = %s, updated_at = now()"
+            " WHERE node_run_id = %s AND tenant_id = %s",
+            (Json(validated), node_run_id, tenant_id),
+        )
 
 
 def set_status(
@@ -153,5 +172,6 @@ __all__ = [
     "get_by_key",
     "get_for_update",
     "list_for_run",
+    "set_input_revision_refs",
     "set_status",
 ]

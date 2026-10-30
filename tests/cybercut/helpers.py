@@ -145,3 +145,14 @@ def staged_files(attempt_dir: Path) -> list[Path]:
     if not Path(attempt_dir).is_dir():
         return []
     return sorted(p for p in Path(attempt_dir).rglob("*") if p.is_file())
+
+
+def make_source_dir() -> Path:
+    """工具层测试用的可写目录（避开 pytest tmp_path 的本机限制）。"""
+    import os
+    import uuid as _uuid
+
+    base = Path(os.environ.get("CYBERCUT_TEST_TMP", "D:/cybercut-wb01-tmp"))
+    path = base / "toolchain-src" / _uuid.uuid4().hex
+    path.mkdir(parents=True, exist_ok=True)
+    return path

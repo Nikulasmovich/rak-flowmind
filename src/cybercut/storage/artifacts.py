@@ -158,12 +158,48 @@ def referenced_paths(
         return {str(r["relative_path"]) for r in cur.fetchall()}
 
 
+def refs_for_node_runs(
+    conn: Any, project_id: str, tenant_id: str, node_run_ids: list[str]
+) -> list[dict]:
+    """每个 (node_run_id, kind) 的**最新** ArtifactRevision 引用（WB-02 §三.5）。
+
+    返回按 kind 稳定排序的列表，用于冻结进下游 `node_runs.input_revision_refs`
+    与 `node_attempts.input_json.input_artifacts`；重试时直接复用冻结结果，
+    **不会漂移到新版本**。
+    """
+    if not node_run_ids:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT ON (node_run_id, kind)"
+            " node_run_id, kind, artifact_revision_id, relative_path, sha256,"
+            " size_bytes, revision_no"
+            "  FROM cybercut.artifact_revisions"
+            " WHERE project_id = %s AND tenant_id = %s AND node_run_id = ANY(%s)"
+            " ORDER BY node_run_id, kind, revision_no DESC",
+            (project_id, tenant_id, list(node_run_ids)),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    return [
+        {
+            "artifact_revision_id": r["artifact_revision_id"],
+            "kind": r["kind"],
+            "relative_path": r["relative_path"],
+            "sha256": r["sha256"],
+            "size_bytes": r["size_bytes"],
+            "node_run_id": r["node_run_id"],
+        }
+        for r in sorted(rows, key=lambda r: (r["kind"], r["node_run_id"]))
+    ]
+
+
 __all__ = [
     "get",
     "latest_for_kind",
     "list_for_node_run",
     "next_revision_no",
     "referenced_paths",
+    "refs_for_node_runs",
     "register",
     "require",
 ]

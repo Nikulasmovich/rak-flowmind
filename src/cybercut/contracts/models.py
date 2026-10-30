@@ -22,6 +22,7 @@ from cybercut.contracts.enums import (
     ProjectStatus,
     RunStatus,
 )
+from cybercut.contracts.run_input import ArtifactRevisionRef, StartRunInput
 
 _ENTITY = ConfigDict(extra="ignore")
 _STRICT = ConfigDict(extra="forbid")
@@ -77,7 +78,7 @@ class NodeRun(BaseModel):
     node_key: str
     status: NodeRunStatus
     depends_on: list[str] = Field(default_factory=list)
-    input_revision_refs: dict[str, Any] = Field(default_factory=dict)
+    input_revision_refs: list[ArtifactRevisionRef] = Field(default_factory=list)
     latest_attempt_no: int = 0
     approval_required: bool = False
     invalidated_at: datetime | None = None
@@ -182,14 +183,6 @@ class CreateProjectInput(BaseModel):
     automation_policy: dict[str, Any] = Field(default_factory=dict)
     idempotency_key: str | None = Field(default=None, max_length=200)
 
-
-class StartRunInput(BaseModel):
-    """启动 Run 入参。"""
-
-    model_config = _STRICT
-
-    pipeline_version: str = Field(default="test-pipeline-v1", min_length=1, max_length=64)
-    requested_from_node: str | None = Field(default=None, max_length=64)
 
 
 class ApprovalDecisionInput(BaseModel):

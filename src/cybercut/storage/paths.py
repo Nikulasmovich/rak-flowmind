@@ -164,6 +164,78 @@ def artifact_publish_path(
     return revision_dir(project_root_path, artifact_revision_id) / sanitize_filename(filename)
 
 
+# ══════════════════════════════════════════════════════════════════
+# 正式路径解析（WB-02 §三.8：只允许正式区，拒绝越界/绝对路径/其它前缀）
+# ══════════════════════════════════════════════════════════════════
+
+#: 素材原始文件区（相对 project_root）
+ASSETS_DIRNAME = "assets"
+
+
+def _resolve_within(prefix: Path, relative_path: str) -> Path:
+    raw = str(relative_path or "")
+    candidate = Path(raw)
+    if candidate.is_absolute() or candidate.drive:
+        raise PathEscapeError(f"路径不得为绝对路径：{raw!r}")
+    target = (prefix / candidate).resolve()
+    try:
+        target.relative_to(prefix)
+    except ValueError as exc:
+        raise PathEscapeError(f"路径越出允许前缀：{raw!r}") from exc
+    return target
+
+
+def resolve_official_artifact_path(
+    project_root_path: Path | str, relative_path: str
+) -> Path:
+    """解析 handler 读取的**正式 Artifact** 路径。
+
+    `relative_path` 相对项目根，且必须位于
+    `artifacts/{artifact_revision_id}/{filename}` 之内（WB-02 §三.8）；
+    绝对路径、`..` 越界与**非 artifacts/ 前缀**一律拒绝。
+    """
+    root = Path(project_root_path).resolve()
+    target = _resolve_within(root, relative_path)
+    rel = target.relative_to(root).as_posix()
+    parts = rel.split("/")
+    if len(parts) < 3 or parts[0] != ARTIFACTS_DIRNAME:
+        raise PathEscapeError(
+            f"正式 Artifact 路径必须为 artifacts/{{revision}}/{{file}}：{relative_path!r}"
+        )
+    return target
+
+
+def resolve_official_asset_path(
+    project_root_path: Path | str, source_relative_path: str
+) -> Path:
+    """解析 handler 读取的**素材原始文件**路径。
+
+    `source_relative_path` 相对项目根，且必须位于
+    `assets/{asset_id}/original/{filename}` 之内（WB-02 §四）。
+    """
+    root = Path(project_root_path).resolve()
+    target = _resolve_within(root, source_relative_path)
+    rel = target.relative_to(root).as_posix()
+    parts = rel.split("/")
+    if len(parts) < 4 or parts[0] != ASSETS_DIRNAME or parts[2] != "original":
+        raise PathEscapeError(
+            f"素材路径必须为 assets/{{asset_id}}/original/{{file}}：{source_relative_path!r}"
+        )
+    return target
+
+
+def asset_original_path(
+    project_root_path: Path | str, asset_id: str, filename: str
+) -> Path:
+    """素材原始文件正式路径：`assets/{asset_id}/original/{safe_filename}`。"""
+    if not asset_id or any(ch in asset_id for ch in ("/", "\\", "..")):
+        raise ValidationError(f"非法 asset_id：{asset_id!r}")
+    return (
+        Path(project_root_path).resolve() / ASSETS_DIRNAME / asset_id
+        / "original" / sanitize_filename(filename)
+    )
+
+
 def resolve_staged_path(attempt_dir_path: Path | str, staged_relative_path: str) -> Path:
     """解析 staged 相对路径 -> `attempt_dir` 内的绝对路径（越界即拒绝）。
 
@@ -189,9 +261,11 @@ def resolve_staged_path(attempt_dir_path: Path | str, staged_relative_path: str)
 
 __all__ = [
     "ARTIFACTS_DIRNAME",
+    "ASSETS_DIRNAME",
     "ATTEMPTS_DIRNAME",
     "DATA_ROOT_ENV",
     "artifact_publish_path",
+    "asset_original_path",
     "attempt_dir",
     "default_data_root",
     "ensure_attempt_dir",
@@ -201,6 +275,8 @@ __all__ = [
     "projects_root",
     "relative_to_project",
     "resolve_artifact_path",
+    "resolve_official_artifact_path",
+    "resolve_official_asset_path",
     "resolve_staged_path",
     "revision_dir",
     "sanitize_filename",

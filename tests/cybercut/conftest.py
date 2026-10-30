@@ -28,6 +28,12 @@ _TRUNCATE_TABLES = (
     "events",
     "idempotency_keys",
     "approvals",
+    "template_bind_revisions",
+    "edit_plan_revisions",
+    "asset_match_revisions",
+    "storyboard_revisions",
+    "script_revisions",
+    "creative_brief_revisions",
     "artifact_revisions",
     "node_attempts",
     "node_runs",
@@ -36,7 +42,7 @@ _TRUNCATE_TABLES = (
 )
 
 
-def test_dsn() -> str:
+def resolve_test_dsn() -> str:
     return (
         os.environ.get("CYBERCUT_TEST_PG_DSN", "").strip()
         or os.environ.get("CYBERCUT_PG_DSN", "").strip()
@@ -47,10 +53,10 @@ def test_dsn() -> str:
 @pytest.fixture(scope="session")
 def db() -> Database:
     """会话级数据库（不存在则 skip）。"""
-    database = Database(test_dsn())
+    database = Database(resolve_test_dsn())
     if not database.ping():
         pytest.skip(
-            f"PostgreSQL 不可用（{test_dsn()}）；设置 CYBERCUT_TEST_PG_DSN 后重跑集成测试"
+            f"PostgreSQL 不可用（{resolve_test_dsn()}）；设置 CYBERCUT_TEST_PG_DSN 后重跑集成测试"
         )
     migrate.apply_migrations(database)
     return database
@@ -58,24 +64,36 @@ def db() -> Database:
 
 @pytest.fixture(autouse=True)
 def _truncate_for_db_tests(request: pytest.FixtureRequest):
-    """仅对请求了 `db` 的测试清空业务表（保持测试隔离）。"""
+    """仅对请求了 `db` 的测试清空业务表（前后各一次，消除夹具顺序依赖）。"""
     if "db" not in request.fixturenames:
         yield
         return
     database: Database = request.getfixturevalue("db")
-    with database.transaction() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "TRUNCATE "
-                + ", ".join(f"cybercut.{t}" for t in _TRUNCATE_TABLES)
-                + " RESTART IDENTITY CASCADE"
-            )
+
+    def _truncate() -> None:
+        with database.transaction() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "TRUNCATE "
+                    + ", ".join(f"cybercut.{t}" for t in _TRUNCATE_TABLES)
+                    + " RESTART IDENTITY CASCADE"
+                )
+
+    _truncate()
     yield
+    _truncate()
 
 
 #: 测试用数据根目录（**不使用 pytest tmp_path**：其清理逻辑在受限环境下会失败，
 #:  且被测代码只需要一个可写的 ASCII 目录）
 _DATA_ROOT_BASE = Path(os.environ.get("CYBERCUT_TEST_TMP", "D:/cybercut-wb01-tmp"))
+
+
+@pytest.fixture
+def source_root(data_root):
+    path = data_root / "ingest-src"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 @pytest.fixture

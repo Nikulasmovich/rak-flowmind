@@ -15,10 +15,11 @@ WB-01 / R1 / R2 / R3 累计模型：
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,9 @@ from cybercut.executor.claim import claim_next_attempt
 from cybercut.executor.heartbeat import HeartbeatMonitor, compute_interval
 from cybercut.storage import approvals as approvals_repo
 from cybercut.storage import artifacts as artifacts_repo
+from cybercut.storage import creative_revisions, node_attempts, node_runs, paths
 from cybercut.storage import events as events_repo
-from cybercut.storage import node_attempts, node_runs, paths
+from cybercut.storage import projects as projects_repo
 from cybercut.storage import runs as runs_repo
 from cybercut.storage._util import new_id
 from cybercut.storage.node_attempts import DEFAULT_LEASE_SECONDS, ERROR_WORKER_LOST
@@ -75,6 +77,35 @@ def sha256_of_file(path: Path) -> tuple[str, int]:
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
+
+
+def _read_json_payload(path: Path, kind: str) -> dict:
+    """读取创作类产物的结构化负载（发布前读 staged；发布后读正式文件）。
+
+    负载必须为 JSON 对象；否则抛错使整个提交事务回滚（**绝不发布非法产物**）。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ArtifactPublishError(
+            f"创作产物负载不可解析：{kind}",
+            details={"kind": kind, "path": str(path)},
+        ) from exc
+    if not isinstance(data, dict):
+        raise ArtifactPublishError(
+            f"创作产物负载必须是 JSON 对象：{kind}",
+            details={"kind": kind},
+        )
+    return data
+
+
+def _write_json_payload(path: Path, payload: dict) -> tuple[str, int]:
+    """以**确定性**序列化写回 staged 文件，返回新的 (sha256, size_bytes)。"""
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2)
+    path.write_text(text, encoding="utf-8")
+    return hashlib.sha256(text.encode("utf-8")).hexdigest(), len(
+        text.encode("utf-8")
+    )
 
 
 @dataclass(frozen=True)
@@ -114,6 +145,10 @@ class _Allocation:
     dest: Path
     relative_path: str
     published_dir: Path | None = field(default=None)
+    #: WB-03R：创作类产物在发布前被改写的**权威** payload 与版本号
+    creative_kind: str | None = None
+    creative_payload: dict | None = None
+    revision_no: int | None = None
 
 
 class _DedicatedBeat:
@@ -578,6 +613,12 @@ class AttemptRunner:
                 # ② 分配 ArtifactRevision id 与正式不可变路径（执行器决定）
                 allocations = self._allocate(project_root, prepared)
 
+                # ②' WB-03R：用**数据库分配**的权威身份改写创作产物 payload
+                #     （发布前、同事务；project 为锁序最内层）
+                self._finalize_creative_payloads(
+                    conn, allocations, node_run, project_id, tenant_id
+                )
+
                 # ③ 原子发布：同文件系统 os.replace（不覆盖任何既有文件/目录）
                 for alloc in allocations:
                     dest_dir = alloc.dest.parent
@@ -593,7 +634,8 @@ class AttemptRunner:
 
                 # ④ 登记产物（内部对 project 行加锁：锁序最内层）
                 registered = self._register_artifacts(
-                    conn, node_run, attempt_row, allocations, project_id, tenant_id
+                    conn, node_run, attempt_row, allocations, project_id, tenant_id,
+                    awaiting_approval=awaiting_approval,
                 )
 
                 # ⑤ 同事务写入终态
@@ -670,6 +712,52 @@ class AttemptRunner:
             except Exception:  # noqa: BLE001
                 logger.warning("本次发布目录清理失败：%s", directory, exc_info=True)
 
+    def _finalize_creative_payloads(
+        self,
+        conn: Any,
+        allocations: list[_Allocation],
+        node_run: dict,
+        project_id: str,
+        tenant_id: str,
+    ) -> None:
+        """把数据库分配的权威身份写进创作产物 payload（WB-03R，发布前）。
+
+        权威身份 = 该产物 ArtifactRevision 的 `artifact_revision_id` 与 `revision_no`，
+        因此「产物文件 / ArtifactRevision / 创作版本表 / payload」四者一一对应。
+        改写后 staged 文件被**确定性重写**并重算哈希，保证登记哈希与磁盘一致。
+        """
+        creative = [a for a in allocations
+                    if a.item.kind in creative_revisions.ARTIFACT_KIND_MAP]
+        if not creative:
+            return
+        # 锁序唯一全序：run -> node_run -> node_attempt -> project（project 最内层）
+        projects_repo.lock(conn, project_id, tenant_id)
+        used: dict[str, int] = {}
+        for alloc in creative:
+            kind = creative_revisions.ARTIFACT_KIND_MAP[alloc.item.kind]
+            if alloc.item.kind not in used:
+                used[alloc.item.kind] = artifacts_repo.next_revision_no(
+                    conn, project_id, tenant_id, alloc.item.kind
+                )
+            revision_no = used[alloc.item.kind]
+            used[alloc.item.kind] = revision_no + 1
+
+            payload = _read_json_payload(alloc.item.staged_abs, alloc.item.kind)
+            finalized = creative_revisions.finalize_payload(
+                kind, payload,
+                revision_id=alloc.artifact_revision_id,
+                revision_no=revision_no,
+                project_id=project_id,
+                run_id=node_run["run_id"],
+            )
+            creative_revisions.validate_payload(kind, finalized)
+            sha, size = _write_json_payload(alloc.item.staged_abs, finalized)
+
+            alloc.creative_kind = kind
+            alloc.creative_payload = finalized
+            alloc.revision_no = revision_no
+            alloc.item = replace(alloc.item, sha256=sha, size_bytes=size)
+
     def _register_artifacts(
         self,
         conn: Any,
@@ -678,24 +766,38 @@ class AttemptRunner:
         allocations: list[_Allocation],
         project_id: str,
         tenant_id: str,
+        *,
+        awaiting_approval: bool = False,
     ) -> list[dict]:
         registered: list[dict] = []
         for alloc in allocations:
-            registered.append(
-                artifacts_repo.register(
-                    conn,
-                    project_id=project_id,
-                    run_id=node_run["run_id"],
-                    node_run_id=node_run["node_run_id"],
-                    attempt_id=attempt_row["attempt_id"],
-                    tenant_id=tenant_id,
-                    kind=alloc.item.kind,
-                    relative_path=alloc.relative_path,
-                    sha256=alloc.item.sha256,
-                    size_bytes=alloc.item.size_bytes,
-                    metadata=alloc.item.metadata,
-                    artifact_revision_id=alloc.artifact_revision_id,
-                )
+            row = artifacts_repo.register(
+                conn,
+                project_id=project_id,
+                run_id=node_run["run_id"],
+                node_run_id=node_run["node_run_id"],
+                attempt_id=attempt_row["attempt_id"],
+                tenant_id=tenant_id,
+                kind=alloc.item.kind,
+                relative_path=alloc.relative_path,
+                sha256=alloc.item.sha256,
+                size_bytes=alloc.item.size_bytes,
+                metadata=alloc.item.metadata,
+                artifact_revision_id=alloc.artifact_revision_id,
+                revision_no=alloc.revision_no,
+            )
+            registered.append(row)
+            # WB-03R：创作类产物在同一事务内登记为**版本化**创作产物，
+            # 且强制 payload 身份 == ArtifactRevision 身份
+            # （非创作 kind 为空操作；任一不一致则整体回滚）
+            # WB-03R2：待审批的版本登记为 `draft`（**不得**标记 active），
+            # 审批通过后再激活并取代旧 active 版本。
+            creative_revisions.persist_for_artifact(
+                conn, artifact_row=row, payload=alloc.creative_payload,
+                revision_id=alloc.artifact_revision_id,
+                revision_no=alloc.revision_no,
+                status=(creative_revisions.STATUS_DRAFT if awaiting_approval
+                        else creative_revisions.STATUS_ACTIVE),
             )
         return registered
 

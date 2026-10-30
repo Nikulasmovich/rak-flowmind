@@ -42,7 +42,9 @@ PROJECT_TRANSITIONS = _t(
         ProjectStatus.FAILED,
         ProjectStatus.CANCELLED,
     ],
-    # completed / failed / cancelled 为终态：无出边
+    # completed / failed / cancelled 为终态：无出边。
+    # WB-03R2：定向修订**不通过**通用状态迁移开放终态出边，
+    # 而是走受控专用路径 `projects.reopen_for_revision()`（见 ADR-0004 决策 31）。
     completed=[],
     failed=[],
     cancelled=[],
@@ -62,6 +64,8 @@ RUN_TRANSITIONS = _t(
         RunStatus.CANCELLING,
     ],
     cancelling=[RunStatus.CANCELLED],
+    # 终态无出边。WB-03R2：定向修订**不通过**通用状态迁移开放终态出边，
+    # 而是走受控专用路径 `runs.reopen_for_revision()`（见 ADR-0004 决策 31）。
     succeeded=[],
     failed=[],
     cancelled=[],
