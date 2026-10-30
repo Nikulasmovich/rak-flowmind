@@ -41,6 +41,9 @@ class EditProjectInput(BaseModel):
         default=None, gt=0, description="目标成片时长（秒）；缺省=按素材自定")
     aspect_ratio: str | None = Field(
         default=None, description="输出画幅 16:9 / 9:16 / 1:1；缺省=16:9")
+    watermark_bbox: tuple[float, float, float, float] | None = Field(
+        default=None,
+        description="固定视频水印区域的归一化框 (x0,y0,x1,y1)，各坐标 0-1；仅视频素材")
     voiceover: bool = Field(
         default=False, description="是否 TTS 口播（需 AI_SPEECH_API_KEY）")
     subtitle: bool = Field(default=True, description="是否烧录字幕")
@@ -59,6 +62,17 @@ class EditProjectInput(BaseModel):
             raise ValueError("assets 不能全为空字符串")
         return cleaned
 
+    @field_validator("watermark_bbox")
+    @classmethod
+    def _valid_watermark_bbox(cls, value):
+        if value is not None and (
+            any(coord < 0 or coord > 1 for coord in value)
+            or value[2] <= value[0]
+            or value[3] <= value[1]
+        ):
+            raise ValueError("watermark_bbox 必须是 0-1 范围内的非空区域")
+        return value
+
     @model_validator(mode="after")
     def _precheck(self) -> "EditProjectInput":
         """URL/沙箱/扩展名预检 + 审批闸/画幅合法性（不占队列槽位）。"""
@@ -75,6 +89,24 @@ class EditProjectInput(BaseModel):
                 f"全部素材被拒（允许扩展名：{cfg.allowed_asset_exts}；本地路径"
                 f"必须位于 data_dir/uploads/ 内；FLOWMIND_ALLOW_ANY_PATH=1 "
                 f"仅限本地测试放行）；被拒：{rejected}")
+        if cfg.backend == "cybercut" and any(
+            Path(path).suffix.lower() in {".mp3", ".wav", ".m4a", ".aac"}
+            for path in accepted
+        ):
+            raise ValueError("CyberCut 后端暂不支持独立音频素材，请仅提交视频或图片")
+        if cfg.backend == "cybercut" and self.voiceover:
+            raise ValueError("CyberCut 当前版本没有可用的 TTS 服务，voiceover 请设为 false")
+        if cfg.backend == "cybercut" and not self.subtitle:
+            raise ValueError("CyberCut 当前版本会渲染字幕，暂不支持关闭 subtitle")
+        if cfg.backend == "cybercut" and self.watermark_bbox is not None and any(
+            Path(path).suffix.lower() not in {
+                ".mp4", ".mov", ".mkv", ".webm",
+            }
+            for path in accepted
+        ):
+            raise ValueError("watermark_bbox 仅支持视频素材；请移除该项目中的图片素材")
+        if cfg.backend == "flowmind" and self.watermark_bbox is not None:
+            raise ValueError("watermark_bbox 仅在 CyberCut 后端支持")
         if len(accepted) > cfg.max_assets:
             raise ValueError(
                 f"素材数 {len(accepted)} 超过上限 {cfg.max_assets}")

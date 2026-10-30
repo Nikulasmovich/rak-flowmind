@@ -36,6 +36,7 @@ _DATA.mkdir(parents=True, exist_ok=True)
     'max_pending_tasks = 100\n'
     'task_ttl_seconds = 86400\n'
     '[editing]\n'
+    'backend = "flowmind"\n'
     'mock = true\n'
     'subtitle_font = "Arial"\n',
     encoding="utf-8")

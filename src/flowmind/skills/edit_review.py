@@ -26,7 +26,6 @@ from flowmind.editing.models import (
 )
 from flowmind.editing.store import get_project_store
 from flowmind.skill import skill
-from flowmind.tasks import TaskQueueFull
 from flowmind.tasks.manager import get_task_manager
 
 _VERSION = "0.1.0"
@@ -81,7 +80,12 @@ def edit_review(inp: ReviewInput) -> SkillOutput[ReviewReport]:
 
     feedback = (inp.feedback or "").strip()
 
+    cybercut_backend = load_config().editing.backend == "cybercut"
+
     if inp.action == "reject":
+        if cybercut_backend:
+            from flowmind.editing.cybercut_backend import apply_review
+            apply_review(inp.project_id, inp.stage, inp.action, feedback)
         project.state = "failed"
         project.error = f"review_rejected[{inp.stage}]: {feedback}"
         store.save_project(project)
@@ -96,6 +100,7 @@ def edit_review(inp: ReviewInput) -> SkillOutput[ReviewReport]:
             confidence=1.0)
 
     # ── approve / revise：驱动续跑 ──
+    previous = project.model_copy(deep=True)
     if inp.action == "approve":
         if inp.stage not in project.approved:
             project.approved.append(inp.stage)
@@ -112,11 +117,15 @@ def edit_review(inp: ReviewInput) -> SkillOutput[ReviewReport]:
 
     manager = get_task_manager()
     try:
+        task_args = {"project_id": inp.project_id}
+        if cybercut_backend:
+            task_args.update({"review_action": inp.action,
+                              "review_stage": inp.stage,
+                              "feedback": feedback})
         task_id = manager.submit(
-            "edit_pipeline", {"project_id": inp.project_id})
-    except TaskQueueFull:
-        project.state = PSTATE_AWAITING_REVIEW   # 提交失败：退回等待，可重试
-        store.save_project(project)
+            "edit_pipeline", task_args)
+    except Exception:
+        store.save_project(previous)
         raise
     # 回存前重载：续跑任务可能已推进项目状态，不能用本副本覆盖
     fresh = store.get_project(inp.project_id) or project
