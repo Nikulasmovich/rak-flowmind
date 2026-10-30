@@ -1,7 +1,7 @@
 [project]
 name = "mcp-base-gpu"
 version = "0.2.0"
-description = "视频本地化 MCP over HTTP SaaS 服务端 —— 7 个 localize_* 工具 + PG 任务引擎"
+description = "MCP over HTTP SaaS 服务端 —— localize 族 7 个 + dsp 族 8 个工具 + PG 任务引擎"
 readme = "README.md"
 requires-python = ">=3.11"
 # ⚠️ 依赖真源 = environment.yml（conda，2026-09 GPU 化升级接管）。
@@ -13,15 +13,23 @@ dependencies = [
     "requests>=2.34.2",
     "httpx>=0.27",
     "python-dotenv>=1.2.2",
+    "tomli-w>=1.0",
     "dashscope>=1.27.1",
     "uvicorn>=0.30",
     # 任务引擎基础设施（PG 存储 / MQTT 事件 / Milvus 向量库）
     "psycopg2-binary>=2.9",
     "paho-mqtt>=2.0",
     "pymilvus>=2.4",
+    # dsp 成片技能族：产物对象存储（S3/MinIO 兼容；懒加载，不装不影响其它技能）
+    "boto3>=1.34",
+    # 认证（ECO-ADR-0011 D4）：校验网关 RS256 JWT + JWKS 本地验签
+    "pyjwt[crypto]>=2.9",
 ]
 
 [project.optional-dependencies]
+# --- CyberCut WB-02 媒体层（pip 兜底） ---
+media = ["scenedetect>=0.6,<0.7", "opencv-python-headless>=4.9"]
+media-asr = ["funasr>=1.1"]
 dev = [
     "ruff>=0.6",
 ]
@@ -29,13 +37,18 @@ dev = [
 [project.scripts]
 mcp-base-gpu = "flowmind.server_http:main"   # 单端口唯一入口（MCP + 任务 REST）
 flowmind-mcp = "flowmind.server:main"        # stdio 调试入口
+# ⚠️ 这条命令**不在本文件提依赖**（`dependencies` 只是**服务运行时**的 pip 兜底快照，且侧车刻意
+# 不属于服务）：它要的 `rapidocr` + `onnxruntime` 是**开发环境**那条路的依赖，真源在 `environment.yml`
+# （照文档装即可用；`onnxruntime` 必须显式装，原因见那边的注释）。默认/生产那条路是容器，
+# 依赖钉在 `deploy/ocr-sidecar/Dockerfile`（ADR-100）。
+rapidocr-sidecar = "flowmind.ocr_sidecar:main"  # 本机 OCR 侧车（cross-dashboard 文字核查直连，ADR-097）
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/flowmind"]
+packages = ["src/flowmind", "src/cybercut"]
 
 [tool.ruff]
 line-length = 100
